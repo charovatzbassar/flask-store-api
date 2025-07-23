@@ -7,3 +7,5 @@ htmlcov/
 .tox/
 docs/_build/
 instance
+.env
+.venv/
