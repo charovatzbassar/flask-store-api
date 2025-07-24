@@ -1,20 +1,25 @@
 from flask.views import MethodView
+from flask import current_app
 from flask_smorest import Blueprint, abort
-from schemas import UserSchema
+from schemas import UserSchema, UserRegisterSchema
 from models import UserModel
 from db import db
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import or_
 from passlib.hash import pbkdf2_sha256
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt, create_refresh_token, get_jwt_identity
 from blocklist import BLOCKLIST
 from hashlib import sha1
 import requests
+from tasks import send_registration_email
 
 blp = Blueprint("users", __name__, description="Operations on users")
 
+
+
 @blp.route("/register")
 class UserRegister(MethodView):
-    @blp.arguments(UserSchema)
+    @blp.arguments(UserRegisterSchema)
     def post(self, user_data):
         if UserModel.query.filter(UserModel.username == user_data['username']).first():
             abort(409, message="A user with that username already exists.")
@@ -32,12 +37,16 @@ class UserRegister(MethodView):
         
         user = UserModel(
             username=user_data['username'],
+            email=user_data['email'],
             password=pbkdf2_sha256.hash(password)
         )
 
         try:
             db.session.add(user)
             db.session.commit()
+
+            current_app.queue.enqueue(send_registration_email, user.email, user.username)
+
         except SQLAlchemyError as e:
             abort(500, message=str(e))
 
@@ -48,7 +57,10 @@ class UserLogin(MethodView):
     @blp.arguments(UserSchema)
     def post(self, user_data):
         user = UserModel.query.filter(
-            UserModel.username == user_data['username']
+            or_(
+                UserModel.username == user_data['username'],
+                UserModel.email == user_data['email']
+            )
         ).first()
 
         if user and pbkdf2_sha256.verify(user_data['password'], user.password):
